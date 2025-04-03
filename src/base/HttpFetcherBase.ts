@@ -1,16 +1,57 @@
 import { FetcherBase, FetcherRequest } from './FetcherBase';
+
+
+const formDataToFormDataEntryValueObj = <T = { [key: string]: FormDataEntryValue | FormDataEntryValue[] }>  (
+  data: FormData | HTMLFormElement
+): T => {
+  if (data instanceof HTMLFormElement) {
+    data = new FormData(data);
+  }
+  const obj: any = {};
+  data.forEach((value, key) => {
+    if (Array.isArray(obj[key])) {
+      obj[key].push(value);
+    } else if (obj[key] !== undefined || !isNaN(obj[key])) {
+      obj[key] = [obj[key], value];
+    } else {
+      obj[key] = value;
+    }
+  });
+  return obj;
+}
+
+export type RequestInitType = RequestInit & { timeout?: number };
+export type RequestInfo = {
+  requestInfo: string | URL;
+  init: RequestInitType;
+};
 export type HttpFetcherTarget =
   | URL
   | string
   | { url: URL | string; searchParams?: { [key: string]: any } | URLSearchParams | FormData };
 export type HttpFetcherConfig<CONFIG, RESPONSE = Response> = {
-  fetch?: RequestInit;
+  fetch?: RequestInitType;
   config?: CONFIG;
   allowedResponseNotOk?: boolean;
+  beforeProxyFetch?: <T extends RequestInfo | URL>(
+    config: BeforeProxyFetchParams<T>
+  ) => Promise<BeforeProxyFetchParams<T>>;
+  afterProxyFetch?: <T extends RequestInfo | URL>(config: AfterProxyFetchParams<T>) => Promise<Response>;
+  skipGlobalBeforeProxyFetch?: boolean;
+  skipGlobalAfterProxyFetch?: boolean;
   fetchResponseBeforeCallBack?: (config: HttpFetcherConfig<CONFIG, RESPONSE>) => void;
   fetchResponseAfterCallBack?: (data: Response, config: HttpFetcherConfig<CONFIG, RESPONSE>) => void;
   hasResponseErrorChecker?: (data: Response, config: HttpFetcherConfig<CONFIG, RESPONSE>) => any;
 };
+export type BeforeProxyFetchParams<T = RequestInfo | URL> = {
+  requestInfo: T;
+  init?: RequestInit;
+};
+export type AfterProxyFetchParams<T = RequestInfo | URL> = {
+  config: BeforeProxyFetchParams<T>;
+  response: Response;
+};
+
 export abstract class HttpFetcherBase<
   CONFIG,
   RESPONSE = Response,
@@ -34,12 +75,30 @@ export abstract class HttpFetcherBase<
     return this.fetch(config);
   }
 
+  patch<T = RESPONSE>(
+    config: FetcherRequest<HttpFetcherTarget, RESPONSE, HttpFetcherConfig<CONFIG, RESPONSE>, T>
+  ): Promise<T> {
+    config.config ??= {};
+    config.config.fetch = config.config?.fetch ?? {};
+    config.config.fetch.method = 'PATCH';
+    return this.fetch(config);
+  }
+
   put<T = RESPONSE>(
     config: FetcherRequest<HttpFetcherTarget, RESPONSE, HttpFetcherConfig<CONFIG, RESPONSE>, T>
   ): Promise<T> {
     config.config ??= {};
     config.config.fetch = config.config?.fetch ?? {};
     config.config.fetch.method = 'PUT';
+    return this.fetch(config);
+  }
+
+  head<T = RESPONSE>(
+    config: FetcherRequest<HttpFetcherTarget, RESPONSE, HttpFetcherConfig<CONFIG, RESPONSE>, T>
+  ): Promise<T> {
+    config.config ??= {};
+    config.config.fetch = config.config?.fetch ?? {};
+    config.config.fetch.method = 'HEAD';
     return this.fetch(config);
   }
 
@@ -52,65 +111,115 @@ export abstract class HttpFetcherBase<
     return this.fetch(config);
   }
 
-  protected beforeFetch(requestInfo: RequestInfo | URL, init?: RequestInit): void {}
-  protected afterFetch(response: Response): void {}
+  protected async beforeProxyFetch<T = RequestInfo | URL>(
+    config: BeforeProxyFetchParams<T>
+  ): Promise<BeforeProxyFetchParams<T>> {
+    return config;
+  }
 
-  protected execute(target: HttpFetcherTarget, config?: HttpFetcherConfig<CONFIG, RESPONSE>): Promise<any | RESPONSE> {
+  protected async afterProxyFetch<T = RequestInfo | URL>(config: AfterProxyFetchParams<T>): Promise<Response> {
+    return config.response;
+  }
+
+  protected async execute(
+    target: HttpFetcherTarget,
+    config?: HttpFetcherConfig<CONFIG, RESPONSE>
+  ): Promise<any | RESPONSE> {
     // target data setting
     if (!(target instanceof URL) && typeof target !== 'string') {
-      const url = typeof target.url === 'string' ? new URL(target.url) : target.url;
+      // const url: URL |  string = target.url;
+      // if (typeof target.url === 'string') {
+      // }
+      const searchParams = new URLSearchParams();
+      // const url = typeof target.url === 'string' ? new URL(target.url) : target.url;
       if (typeof target.searchParams === 'string') {
         new URLSearchParams(target.searchParams).forEach((value, key) => {
-          url.searchParams.append(key, value);
+          searchParams.append(key, value);
         });
       } else if (typeof target.searchParams === 'object') {
         let body = target.searchParams;
         if (typeof FormData !== 'undefined' && body instanceof FormData) {
-          body = this.formDataToFormDataEntryValueObj(body);
+          body = formDataToFormDataEntryValueObj(body);
         }
-        for (const [k, v] of Object.entries(body)) {
+        const forTarget = body instanceof URLSearchParams ? body.entries() : Object.entries(body);
+        for (const [k, v] of Array.from(forTarget)) {
           if (Array.isArray(v)) {
-            v.forEach(it => url.searchParams.append(k, it));
+            v.forEach(it => searchParams.append(k, it));
           } else {
-            url.searchParams.append(k, v as any);
+            searchParams.append(k, v as any);
           }
         }
       }
-      target = url;
-    }
-    config?.fetchResponseBeforeCallBack?.(config);
-    this.beforeFetch(target, config?.fetch);
-    return fetch(target, config?.fetch).then(it => {
-      this.afterFetch(it);
-      config?.fetchResponseAfterCallBack?.(it, config);
-      if (!config?.allowedResponseNotOk && !it.ok) {
-        throw it;
-      }
-      const data = config?.hasResponseErrorChecker?.(it, config);
-      if (data) {
-        throw data;
-      }
-      return it;
-    });
-  }
 
-
-  private formDataToFormDataEntryValueObj<T = { [key: string]: FormDataEntryValue | FormDataEntryValue[] }>(
-    data: FormData | HTMLFormElement
-  ): T {
-    if (data instanceof HTMLFormElement) {
-      data = new FormData(data);
-    }
-    const obj: any = {};
-    data.forEach((value, key) => {
-      if (Array.isArray(obj[key])) {
-        obj[key].push(value);
-      } else if (obj[key] !== undefined || !isNaN(obj[key])) {
-        obj[key] = [obj[key], value];
-      } else {
-        obj[key] = value;
+      try {
+        const url = typeof target.url === 'string' ? new URL(target.url) : target.url;
+        searchParams.forEach((value, key) => {
+          url.searchParams.append(key, value);
+        });
+        target = url;
+      } catch (e) {
+        if (typeof (target as any).url === 'string') {
+          const searchParamString = searchParams.toString();
+          target = (target as any).url + (searchParamString ? '?' + searchParamString : '');
+        } else {
+          target = '';
+        }
       }
-    });
-    return obj;
+    }
+
+    // before proxy fetch
+    const beforeProxyData = { requestInfo: target, init: config?.fetch } as BeforeProxyFetchParams<URL>;
+    let beforeData = config?.beforeProxyFetch
+      ? await config?.beforeProxyFetch(config as any)
+      : beforeProxyData.requestInfo;
+    beforeData = config?.skipGlobalBeforeProxyFetch ? beforeProxyData : await this.beforeProxyFetch(beforeProxyData);
+    target = beforeData.requestInfo as URL;
+    if (beforeData.init) {
+      config ??= {};
+      config.fetch = beforeData.init;
+    }
+
+    let abortedTimeout: number | undefined;
+    if (config?.fetch && 'timeout' in config.fetch) {
+      const abortController = new AbortController();
+      abortedTimeout = setTimeout(() => {
+        if (config.fetch?.signal) {
+          const inputSignal = config.fetch.signal;
+          const listener = () => {
+            if (!abortController.signal.aborted) {
+              abortController.abort();
+            }
+            inputSignal.removeEventListener('abort', listener);
+          };
+          inputSignal.addEventListener('abort', listener);
+        }
+        if (!abortController.signal.aborted) {
+          abortController.abort();
+        }
+      }, config.fetch.timeout);
+      config.fetch.signal = abortController.signal;
+    }
+
+    return fetch(target, config?.fetch)
+      .then(async it => {
+        // after proxy fetch
+        const afterProxyData = { config: beforeData, response: it };
+        it = config?.afterProxyFetch ? await config.afterProxyFetch(afterProxyData) : it;
+        it = config?.skipGlobalAfterProxyFetch ? it : await this.afterProxyFetch(afterProxyData);
+        config?.fetchResponseAfterCallBack?.(it, config);
+        if (!config?.allowedResponseNotOk && !it.ok) {
+          throw it;
+        }
+        const data = config?.hasResponseErrorChecker?.(it, config);
+        if (data) {
+          throw data;
+        }
+        return it;
+      })
+      .finally(() => {
+        if (abortedTimeout) {
+          clearTimeout(abortedTimeout);
+        }
+      });
   }
 }

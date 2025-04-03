@@ -2,6 +2,7 @@ export type FetcherRequest<TARGET, RES, C, T = RES> = {
   target: TARGET;
   config?: C & { hasErrorChecker?: (data: RES) => any };
   transform?: (data: RES) => T;
+  errorTransform?: (data?: any) => Promise<any>;
   before?: () => void;
   error?: (e?: any) => void;
   afterSuccess?: () => void;
@@ -48,9 +49,12 @@ export abstract class FetcherBase<TARGET, RESPONSE, CONFIG, PIPE extends { respo
           this.afterSuccessTransform(config, pipe);
           resolve(gdata);
         })
-        .catch(e => {
+        .catch(async e => {
           this.error(config, pipe, e);
           config?.error?.();
+          if (config?.errorTransform) {
+            e = await config.errorTransform(e);
+          }
           reject(e);
         })
         .finally(() => {
